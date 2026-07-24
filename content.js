@@ -1,7 +1,16 @@
 (() => {
   "use strict";
 
+  if (globalThis.__davidMarkdownControllerV1) {
+    return;
+  }
+  globalThis.__davidMarkdownControllerV1 = true;
+
   const TOAST_ID = "david-copy-markdown-toast";
+  const SELECTOR_HOST_ID = "david-message-selector";
+  const SELECTOR_STYLE_ID = "david-message-selector-style";
+  const COMMAND_QUICK_COPY = "quick-copy";
+  const COMMAND_SELECT_MESSAGES = "select-messages";
   const CHATGPT_MESSAGE_SELECTOR =
     '[data-message-author-role="user"], [data-message-author-role="assistant"]';
   const IGNORED_CLASS_NAMES = new Set([
@@ -39,31 +48,70 @@
     "TABLE",
     "HR"
   ]);
+  const MATH_SELECTOR = [
+    "[data-math]",
+    "[data-tex]",
+    "[data-latex]",
+    "[data-math-style]",
+    ".math-inline",
+    ".math-block",
+    ".katex",
+    ".katex-display",
+    "math",
+    "mjx-container"
+  ].join(",");
+  let messageSelectionController = null;
 
-  void main();
-
-  async function main() {
-    try {
-      const selectionMarkdown = extractSelectionMarkdown();
-      if (selectionMarkdown) {
-        await writeClipboard(selectionMarkdown);
-        showToast("Copied selection as Markdown.", false);
-        return;
-      }
-
-      const adapter = getConversationAdapter();
-      if (!adapter) {
-        throw new Error("Select some content before clicking David.");
-      }
-
-      const conversation = extractConversation(adapter);
-      await writeClipboard(conversation.markdown);
-      showToast(`Copied ${conversation.count} messages as Markdown.`, false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Copy failed.";
-      console.error("David:", error);
-      showToast(message, true);
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "david:command") {
+      return false;
     }
+
+    void handleCommand(message.command)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage = getErrorMessage(error);
+        console.error("David:", error);
+        showToast(errorMessage, true);
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  });
+
+  async function handleCommand(command) {
+    switch (command) {
+      case COMMAND_QUICK_COPY:
+        return quickCopy();
+      case COMMAND_SELECT_MESSAGES:
+        return enterMessageSelectionMode();
+      default:
+        throw new Error("David received an unknown command.");
+    }
+  }
+
+  async function quickCopy() {
+    messageSelectionController?.cancel();
+
+    const selectionMarkdown = extractSelectionMarkdown();
+    if (selectionMarkdown) {
+      await writeClipboard(selectionMarkdown);
+      showToast("Copied selection as Markdown.", false);
+      return { action: "copied-selection" };
+    }
+
+    const adapter = getConversationAdapter();
+    if (!adapter) {
+      throw new Error("Select some content before using Quick Copy.");
+    }
+
+    const conversation = extractConversation(adapter);
+    await writeClipboard(conversation.markdown);
+    showToast(`Copied ${conversation.count} messages as Markdown.`, false);
+    return { action: "copied-conversation", count: conversation.count };
+  }
+
+  function getErrorMessage(error) {
+    return error instanceof Error ? error.message : "David could not complete this action.";
   }
 
   function extractSelectionMarkdown() {
@@ -78,19 +126,46 @@
     }
 
     const selectedText = selection.toString();
-    if (!selectedText.trim()) {
-      return null;
-    }
 
     const container = document.createElement("div");
     for (let index = 0; index < selection.rangeCount; index += 1) {
       if (index > 0) {
         container.appendChild(document.createElement("br"));
       }
-      container.appendChild(selection.getRangeAt(index).cloneContents());
+      const range = expandRangeToMathBoundaries(selection.getRangeAt(index));
+      container.appendChild(range.cloneContents());
     }
 
-    return elementToMarkdown(container, { headingOffset: 0 }) || selectedText.trim();
+    return (
+      elementToMarkdown(container, { headingOffset: 0 }) || selectedText.trim() || null
+    );
+  }
+
+  function expandRangeToMathBoundaries(range) {
+    const expanded = range.cloneRange();
+    const startMath = findMathBoundaryRoot(range.startContainer);
+    const endMath = findMathBoundaryRoot(range.endContainer);
+
+    if (startMath) {
+      expanded.setStartBefore(startMath);
+    }
+    if (endMath) {
+      expanded.setEndAfter(endMath);
+    }
+
+    return expanded;
+  }
+
+  function findMathBoundaryRoot(node) {
+    const element =
+      node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    let mathRoot = element?.closest(MATH_SELECTOR) || null;
+
+    while (mathRoot?.parentElement?.matches(MATH_SELECTOR)) {
+      mathRoot = mathRoot.parentElement;
+    }
+
+    return mathRoot;
   }
 
   function extractControlSelection() {
@@ -136,8 +211,8 @@
     }
   }
 
-  function extractConversation(adapter) {
-    const messages = [];
+  function getConversationRecords(adapter) {
+    const records = [];
     const seen = new Set();
 
     for (const record of adapter.getMessages()) {
@@ -155,6 +230,17 @@
       }
       seen.add(key);
 
+      records.push(record);
+    }
+
+    return records;
+  }
+
+  function extractConversation(adapter, selectedRecords = null) {
+    const messages = [];
+    const records = selectedRecords || getConversationRecords(adapter);
+
+    for (const record of records) {
       const markdown =
         record.role === "user"
           ? extractUserText(record.content)
@@ -178,6 +264,369 @@
       .trim();
 
     return { markdown, count: messages.length };
+  }
+
+  function enterMessageSelectionMode() {
+    messageSelectionController?.cancel();
+
+    const adapter = getConversationAdapter();
+    if (!adapter) {
+      throw new Error(
+        "Select Messages is available on ChatGPT, Gemini, and Claude conversations."
+      );
+    }
+
+    const records = getConversationRecords(adapter);
+    if (records.length === 0) {
+      throw new Error(`No ${adapter.name} conversation was found on this page.`);
+    }
+
+    window.getSelection()?.removeAllRanges();
+    const controller = createMessageSelectionController(adapter, records);
+    messageSelectionController = controller;
+    controller.start();
+    showToast("Selection mode is active. Click a message to begin.", false);
+    return { action: "selection-mode", count: records.length };
+  }
+
+  function createMessageSelectionController(adapter, initialRecords) {
+    const SELECTABLE_ATTRIBUTE = "data-david-message-selectable";
+    const SELECTED_ATTRIBUTE = "data-david-message-selected";
+    const ANCHOR_ATTRIBUTE = "data-david-message-anchor";
+    let records = initialRecords;
+    let recordKeys = makeRecordKeys(records);
+    let anchorKey = null;
+    let endKey = null;
+    let host = null;
+    let shadow = null;
+    let style = null;
+    let observer = null;
+    let refreshTimer = null;
+    let countLabel = null;
+    let copyButton = null;
+    let resetButton = null;
+
+    function start() {
+      document.getElementById(SELECTOR_HOST_ID)?.remove();
+      document.getElementById(SELECTOR_STYLE_ID)?.remove();
+
+      style = document.createElement("style");
+      style.id = SELECTOR_STYLE_ID;
+      style.textContent = `
+        [${SELECTABLE_ATTRIBUTE}="true"] {
+          cursor: pointer !important;
+          outline-offset: 4px !important;
+          transition: outline-color 100ms ease, box-shadow 100ms ease !important;
+        }
+        [${SELECTABLE_ATTRIBUTE}="true"]:hover:not([${SELECTED_ATTRIBUTE}="true"]) {
+          outline: 2px dashed #64748b !important;
+        }
+        [${SELECTED_ATTRIBUTE}="true"] {
+          outline: 3px solid #2563eb !important;
+          box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.14) !important;
+        }
+        [${ANCHOR_ATTRIBUTE}="true"] {
+          outline-color: #1d4ed8 !important;
+        }
+      `;
+      document.documentElement.appendChild(style);
+
+      host = document.createElement("div");
+      host.id = SELECTOR_HOST_ID;
+      Object.assign(host.style, {
+        position: "fixed",
+        left: "50%",
+        bottom: "24px",
+        zIndex: "2147483646",
+        transform: "translateX(-50%)"
+      });
+      shadow = host.attachShadow({ mode: "open" });
+      shadow.innerHTML = `
+        <style>
+          :host { all: initial; }
+          * { box-sizing: border-box; }
+          .panel {
+            width: min(620px, calc(100vw - 32px));
+            padding: 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 14px;
+            background: #ffffff;
+            color: #0f172a;
+            box-shadow: 0 18px 50px rgba(15, 23, 42, 0.24);
+            font: 500 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }
+          .topline {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 10px;
+          }
+          .title { font-weight: 750; }
+          .count { color: #475569; font-size: 13px; }
+          .hint { margin: 0 0 12px; color: #475569; font-size: 13px; }
+          .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+          button {
+            min-height: 36px;
+            padding: 7px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 9px;
+            background: #ffffff;
+            color: #0f172a;
+            cursor: pointer;
+            font: 650 13px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }
+          button:hover:not(:disabled) { background: #f8fafc; border-color: #94a3b8; }
+          button:focus-visible { outline: 3px solid rgba(37, 99, 235, 0.35); outline-offset: 2px; }
+          button:disabled { cursor: not-allowed; opacity: 0.45; }
+          .primary { border-color: #1d4ed8; background: #2563eb; color: #ffffff; }
+          .primary:hover:not(:disabled) { border-color: #1e40af; background: #1d4ed8; }
+          .cancel { margin-left: auto; }
+          @media (max-width: 520px) { .cancel { margin-left: 0; } }
+        </style>
+        <section class="panel" role="dialog" aria-label="Select conversation messages">
+          <div class="topline">
+            <span class="title">Select Messages</span>
+            <span class="count" id="count">No messages selected</span>
+          </div>
+          <p class="hint">Click a message to set the start. Click another message to set the end.</p>
+          <div class="actions">
+            <button class="primary" id="copy" type="button" disabled>Copy</button>
+            <button id="all" type="button">Select all</button>
+            <button id="reset" type="button" disabled>Start over</button>
+            <button class="cancel" id="cancel" type="button">Cancel</button>
+          </div>
+        </section>
+      `;
+      (document.body || document.documentElement).appendChild(host);
+
+      countLabel = shadow.getElementById("count");
+      copyButton = shadow.getElementById("copy");
+      resetButton = shadow.getElementById("reset");
+      copyButton.addEventListener("click", () => void copySelected());
+      shadow.getElementById("all").addEventListener("click", selectAll);
+      resetButton.addEventListener("click", resetSelection);
+      shadow.getElementById("cancel").addEventListener("click", () => {
+        cancel();
+        showToast("Message selection canceled.", false);
+      });
+
+      document.addEventListener("click", handleMessageClick, true);
+      document.addEventListener("keydown", handleKeydown, true);
+      decorateRecords();
+
+      observer = new MutationObserver(scheduleRefresh);
+      observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+    }
+
+    function handleMessageClick(event) {
+      if (!(event.target instanceof Node) || host?.contains(event.target)) {
+        return;
+      }
+
+      const index = records.findIndex(
+        (record) => record.root === event.target || record.root.contains(event.target)
+      );
+      if (index < 0) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (anchorKey === null) {
+        anchorKey = recordKeys[index];
+      }
+      endKey = recordKeys[index];
+      updateSelectionDisplay();
+    }
+
+    function handleKeydown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancel();
+        showToast("Message selection canceled.", false);
+        return;
+      }
+      if (
+        event.composedPath().includes(host) ||
+        isEditableTarget(event.target) ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey
+      ) {
+        return;
+      }
+      if (event.key === "Enter" && getSelectedRecords().length > 0) {
+        event.preventDefault();
+        void copySelected();
+      }
+    }
+
+    function isEditableTarget(target) {
+      return Boolean(
+        target instanceof Element &&
+          (target.matches("input, textarea, select") || target.isContentEditable)
+      );
+    }
+
+    function selectAll() {
+      if (records.length === 0) {
+        return;
+      }
+      anchorKey = recordKeys[0];
+      endKey = recordKeys[recordKeys.length - 1];
+      updateSelectionDisplay();
+    }
+
+    function resetSelection() {
+      anchorKey = null;
+      endKey = null;
+      updateSelectionDisplay();
+    }
+
+    async function copySelected() {
+      refreshRecords();
+      const selectedRecords = getSelectedRecords();
+      if (selectedRecords.length === 0) {
+        showToast("Select at least one message before copying.", true);
+        return;
+      }
+
+      try {
+        const conversation = extractConversation(adapter, selectedRecords);
+        await writeClipboard(conversation.markdown);
+        cancel();
+        const messageLabel = conversation.count === 1 ? "message" : "messages";
+        showToast(
+          `Copied ${conversation.count} selected ${messageLabel} as Markdown.`,
+          false
+        );
+      } catch (error) {
+        console.error("David:", error);
+        showToast(getErrorMessage(error), true);
+      }
+    }
+
+    function getSelectedRecords() {
+      if (anchorKey === null || endKey === null) {
+        return [];
+      }
+      const anchorIndex = recordKeys.indexOf(anchorKey);
+      const endIndex = recordKeys.indexOf(endKey);
+      if (anchorIndex < 0 || endIndex < 0) {
+        return [];
+      }
+      const first = Math.min(anchorIndex, endIndex);
+      const last = Math.max(anchorIndex, endIndex);
+      return records.slice(first, last + 1);
+    }
+
+    function makeRecordKeys(sourceRecords) {
+      return sourceRecords.map((record, index) =>
+        typeof record.key === "string" ? record.key : `${record.role}:${index}`
+      );
+    }
+
+    function decorateRecords() {
+      for (const record of records) {
+        record.root.setAttribute(SELECTABLE_ATTRIBUTE, "true");
+      }
+      updateSelectionDisplay();
+    }
+
+    function updateSelectionDisplay() {
+      const selectedRecords = getSelectedRecords();
+      const selectedRoots = new Set(selectedRecords.map((record) => record.root));
+      const anchorIndex = anchorKey === null ? -1 : recordKeys.indexOf(anchorKey);
+
+      records.forEach((record, index) => {
+        setStateAttribute(
+          record.root,
+          SELECTED_ATTRIBUTE,
+          selectedRoots.has(record.root)
+        );
+        setStateAttribute(record.root, ANCHOR_ATTRIBUTE, index === anchorIndex);
+      });
+
+      if (countLabel) {
+        countLabel.textContent =
+          selectedRecords.length === 0
+            ? "No messages selected"
+            : `${selectedRecords.length} ${
+                selectedRecords.length === 1 ? "message" : "messages"
+              } selected`;
+      }
+      if (copyButton) {
+        copyButton.disabled = selectedRecords.length === 0;
+      }
+      if (resetButton) {
+        resetButton.disabled = anchorKey === null;
+      }
+    }
+
+    function setStateAttribute(element, attribute, isActive) {
+      if (isActive) {
+        element.setAttribute(attribute, "true");
+      } else {
+        element.removeAttribute(attribute);
+      }
+    }
+
+    function scheduleRefresh() {
+      if (refreshTimer !== null) {
+        return;
+      }
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        refreshRecords();
+      }, 100);
+    }
+
+    function refreshRecords() {
+      clearRecordAttributes(records);
+      records = getConversationRecords(adapter);
+      recordKeys = makeRecordKeys(records);
+      if (!recordKeys.includes(anchorKey)) {
+        anchorKey = null;
+      }
+      if (!recordKeys.includes(endKey)) {
+        endKey = anchorKey;
+      }
+      decorateRecords();
+    }
+
+    function clearRecordAttributes(sourceRecords) {
+      for (const record of sourceRecords) {
+        record.root.removeAttribute(SELECTABLE_ATTRIBUTE);
+        record.root.removeAttribute(SELECTED_ATTRIBUTE);
+        record.root.removeAttribute(ANCHOR_ATTRIBUTE);
+      }
+    }
+
+    function cancel() {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+      observer?.disconnect();
+      observer = null;
+      document.removeEventListener("click", handleMessageClick, true);
+      document.removeEventListener("keydown", handleKeydown, true);
+      clearRecordAttributes(records);
+      host?.remove();
+      style?.remove();
+      host = null;
+      style = null;
+      if (messageSelectionController === controller) {
+        messageSelectionController = null;
+      }
+    }
+
+    const controller = { start, cancel };
+    return controller;
   }
 
   function getChatGPTMessages() {
@@ -325,7 +774,8 @@
   function hasMeaningfulContent(element) {
     return Boolean(
       element.textContent?.trim() ||
-        element.querySelector("pre, code, table, img, .katex, math")
+        element.matches(MATH_SELECTOR) ||
+        element.querySelector(`pre, code, table, img, ${MATH_SELECTOR}`)
     );
   }
 
@@ -351,6 +801,10 @@
     }
 
     const element = node;
+    const math = renderMath(element);
+    if (math !== null) {
+      return math;
+    }
     if (shouldSkipElement(element)) {
       return "";
     }
@@ -449,7 +903,7 @@
 
   function shouldSkipElement(element) {
     return (
-      SKIPPED_TAGS.has(element.tagName) ||
+      SKIPPED_TAGS.has(element.tagName.toUpperCase()) ||
       Array.from(element.classList).some((name) => IGNORED_CLASS_NAMES.has(name)) ||
       element.getAttribute("aria-hidden") === "true"
     );
@@ -642,24 +1096,104 @@
   }
 
   function renderMath(element) {
-    const isKatex = element.classList.contains("katex");
-    const isDisplay =
-      element.classList.contains("katex-display") ||
-      element.getAttribute("data-math-style") === "display";
-
-    if (!isKatex && !isDisplay) {
+    if (!element.matches(MATH_SELECTOR)) {
       return null;
     }
 
-    const annotation = element.querySelector(
-      'annotation[encoding="application/x-tex"]'
+    const tex = normalizeMathSource(
+      extractMathSource(element) || extractMathFallbackText(element)
     );
-    const tex = annotation?.textContent?.trim();
     if (!tex) {
       return null;
     }
 
-    return isDisplay ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`;
+    return isDisplayMath(element) ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`;
+  }
+
+  function extractMathSource(element) {
+    const tagName = element.tagName.toUpperCase();
+
+    for (const attribute of ["data-math", "data-tex", "data-latex"]) {
+      const value = element.getAttribute(attribute)?.trim();
+      if (value) {
+        return value;
+      }
+    }
+
+    const annotation = element.querySelector(
+      'annotation[encoding="application/x-tex" i], annotation[encoding="application/x-latex" i], annotation[encoding="text/tex" i]'
+    );
+    if (annotation?.textContent?.trim()) {
+      return annotation.textContent;
+    }
+
+    const accessibleMath =
+      tagName === "MATH" || tagName === "MJX-CONTAINER";
+    if (accessibleMath) {
+      const accessibleSource =
+        element.getAttribute("alttext") || element.getAttribute("aria-label");
+      if (accessibleSource?.trim()) {
+        return accessibleSource;
+      }
+    }
+
+    const nestedAccessibleMath = element.querySelector(
+      "math[alttext], math[aria-label]"
+    );
+    return (
+      nestedAccessibleMath?.getAttribute("alttext") ||
+      nestedAccessibleMath?.getAttribute("aria-label") ||
+      ""
+    );
+  }
+
+  function extractMathFallbackText(element) {
+    const visualMath = element.querySelector(".katex-html") || element;
+    return (visualMath.textContent || "")
+      .replace(/[\u200b-\u200d\u2060]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function normalizeMathSource(source) {
+    let tex = normalizeNewlines(source || "")
+      .replace(/[\u200b-\u200d\u2060]/g, "")
+      .trim();
+    const delimiterPairs = [
+      ["$$", "$$"],
+      ["\\[", "\\]"],
+      ["\\(", "\\)"],
+      ["$", "$"]
+    ];
+
+    for (const [opening, closing] of delimiterPairs) {
+      if (
+        tex.length > opening.length + closing.length &&
+        tex.startsWith(opening) &&
+        tex.endsWith(closing)
+      ) {
+        tex = tex.slice(opening.length, -closing.length).trim();
+        break;
+      }
+    }
+
+    return tex;
+  }
+
+  function isDisplayMath(element) {
+    const tagName = element.tagName.toUpperCase();
+    const mathStyle = element.getAttribute("data-math-style");
+    const displayAttribute = element.getAttribute("display");
+
+    return Boolean(
+      element.matches(".math-block, .katex-display") ||
+        mathStyle === "display" ||
+        mathStyle === "block" ||
+        displayAttribute === "block" ||
+        (tagName === "MJX-CONTAINER" && displayAttribute === "true") ||
+        element.getAttribute("data-display") === "true" ||
+        element.closest(".math-block, .katex-display") !== null
+    );
   }
 
   function escapeText(rawText) {
@@ -754,6 +1288,15 @@
   function showToast(message, isError) {
     document.getElementById(TOAST_ID)?.remove();
 
+    const selectorPanel = document
+      .getElementById(SELECTOR_HOST_ID)
+      ?.shadowRoot?.querySelector(".panel");
+    const selectorTop = selectorPanel?.getBoundingClientRect().top;
+    const toastBottom =
+      typeof selectorTop === "number"
+        ? `${Math.ceil(Math.max(24, window.innerHeight - selectorTop + 12))}px`
+        : "24px";
+
     const toast = document.createElement("div");
     toast.id = TOAST_ID;
     toast.setAttribute("role", "status");
@@ -762,7 +1305,7 @@
     Object.assign(toast.style, {
       position: "fixed",
       right: "24px",
-      bottom: "24px",
+      bottom: toastBottom,
       zIndex: "2147483647",
       maxWidth: "360px",
       padding: "12px 16px",

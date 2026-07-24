@@ -1,28 +1,49 @@
 "use strict";
 
-const DEFAULT_TITLE = "Copy selection or AI conversation as Markdown";
+const POPUP_MESSAGE_TYPE = "david:popup-command";
+const CONTENT_MESSAGE_TYPE = "david:command";
+const ALLOWED_COMMANDS = new Set(["quick-copy", "select-messages"]);
 
-chrome.action.onClicked.addListener((tab) => {
-  void copyConversation(tab);
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== POPUP_MESSAGE_TYPE) {
+    return false;
+  }
+
+  void runActiveTabCommand(message.command)
+    .then(sendResponse)
+    .catch((error) => {
+      console.error("David could not run on this page.", error);
+      sendResponse({
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "David could not run on this page."
+      });
+    });
+  return true;
 });
 
-async function copyConversation(tab) {
-  if (!tab.id || !isInjectableUrl(tab.url)) {
-    if (tab.id) {
-      await showBadge(tab.id, "!", "#b91c1c", "David needs a regular web page");
-    }
-    return;
+async function runActiveTabCommand(command) {
+  if (!ALLOWED_COMMANDS.has(command)) {
+    throw new Error("David received an unknown command.");
   }
 
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["content.js"]
-    });
-  } catch (error) {
-    console.error("David could not run on this page.", error);
-    await showBadge(tab.id, "!", "#b91c1c", "David could not copy this page");
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !isInjectableUrl(tab.url)) {
+    throw new Error("Open a regular web page before using David.");
   }
+
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["content.js"]
+  });
+
+  const response = await chrome.tabs.sendMessage(tab.id, {
+    type: CONTENT_MESSAGE_TYPE,
+    command
+  });
+  return response || { ok: true };
 }
 
 function isInjectableUrl(rawUrl) {
@@ -36,17 +57,4 @@ function isInjectableUrl(rawUrl) {
   } catch {
     return false;
   }
-}
-
-async function showBadge(tabId, text, color, title) {
-  await Promise.all([
-    chrome.action.setBadgeBackgroundColor({ tabId, color }),
-    chrome.action.setBadgeText({ tabId, text }),
-    chrome.action.setTitle({ tabId, title })
-  ]);
-
-  setTimeout(() => {
-    void chrome.action.setBadgeText({ tabId, text: "" });
-    void chrome.action.setTitle({ tabId, title: DEFAULT_TITLE });
-  }, 2500);
 }
