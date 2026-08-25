@@ -941,17 +941,51 @@
   }
 
   function renderCodeBlock(element) {
-    const code = element.querySelector("code") || element;
-    const raw = normalizeNewlines(code.textContent || "").replace(/\n$/, "");
+    const code = findCodeContent(element);
+    const raw = extractCodeText(code).replace(/\n$/, "");
     const language = detectCodeLanguage(code, element);
     const fence = makeFence(raw);
     return `\n\n${fence}${language}\n${raw}\n${fence}\n\n`;
   }
 
+  function findCodeContent(pre) {
+    return (
+      pre.querySelector('.cm-content[role="textbox"]') ||
+      pre.querySelector('[role="textbox"][aria-multiline="true"]') ||
+      pre.querySelector("code") ||
+      pre
+    );
+  }
+
+  function extractCodeText(code) {
+    const editorLines = Array.from(code.children).filter(
+      (child) => child.classList.contains("cm-line") || child.hasAttribute("data-code-line")
+    );
+    if (editorLines.length > 0) {
+      return editorLines
+        .map((line) => normalizeNewlines(line.textContent || ""))
+        .join("\n");
+    }
+
+    const raw = normalizeNewlines(code.textContent || "");
+    if (raw.includes("\n")) {
+      return raw;
+    }
+
+    const rendered = normalizeNewlines(code.innerText || "");
+    return rendered.includes("\n") ? rendered : raw;
+  }
+
   function detectCodeLanguage(code, pre) {
-    const candidates = [
+    const dataLanguage = [
       code.getAttribute("data-language"),
-      pre.getAttribute("data-language"),
+      pre.getAttribute("data-language")
+    ].find((candidate) => /^[\w#+.-]+$/i.test(candidate || ""));
+    if (dataLanguage) {
+      return dataLanguage;
+    }
+
+    const candidates = [
       ...Array.from(code.classList),
       ...Array.from(pre.classList)
     ].filter(Boolean);
