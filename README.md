@@ -41,7 +41,7 @@ macOS 的 `Control` 指物理 Control 键。默认使用 Q（Quick）和 E（Exp
 ## 导入 Babel
 
 1. 等待回答生成和图片加载完成，展开需要的折叠内容。在 David 选择 **Export for Babel**，或先选择消息范围再导出。
-2. 在 Babel APP 选择目标文件夹，再选择 **Import → Import David archive**，打开下载的 `.babel.json`。
+2. 在 Babel APP 选择目标文件夹，再选择 **Import → Import David archive**；将下载的 `.babel.json` 文件从下载列表或文件夹直接拖入导入窗口，也可以点击 **Choose archive**。一次拖入一个归档，读入后仍可检查和编辑；无效替换不会清空之前审阅的内容。
 3. 检查标题、Markdown、图片数量、捕获提示和静态快照预览，再打开未保存草稿。设置文件夹、标签并保存后，图片进入该 APP 的托管附件，原排版作为不可变离线快照保存。
 
 只需要文字时，使用 **Save Markdown**，再通过 **Import → Import Markdown file** 导入 `.md`。
