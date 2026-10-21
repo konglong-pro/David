@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Modern ChatGPT fixture</title></head>
+<body>
+  <aside><div class="prose">Unrelated sidebar content</div></aside>
+  <main>
+    <div role="separator" data-markdown-copy="exclude">Yesterday</div>
+    <div data-turn-key="turn-1">
+      <div data-chatgpt-search-unit-key="fallback-turn-0:0:user" data-chatgpt-search-message-ids="user-1">
+        <div data-content-search-unit-key="fallback-turn-0:0:user">
+          <div data-user-message-bubble="true"><div>First question</div></div>
+        </div>
+        <div class="turn-action-controls"><button>Copy user</button></div>
+      </div>
+      <div data-chatgpt-search-unit-key="fallback-turn-0:2:assistant" data-chatgpt-search-message-ids="assistant-1 assistant-1">
+        <h4 class="sr-only" data-conversation-role="assistant" tabindex="-1">ChatGPT said:</h4>
+        <div>
+          <div data-chatgpt-selection-message-id="assistant-1">
+            <div data-markdown-text-style="assistant-message">
+              <div data-markdown-copy="contents" data-dil-source-message-id="assistant-1">
+                <div><h2>First answer</h2><p>First response body with <strong>formatting</strong>.</p></div>
+              </div>
+              <span data-markdown-copy="exclude">Internal copy hint</span>
+            </div>
+          </div>
+          <div class="turn-action-controls"><button>Copy answer</button><span>Toolbar hint</span></div>
+        </div>
+      </div>
+    </div>
+    <div data-turn-key="turn-2">
+      <div data-chatgpt-search-unit-key="fallback-turn-1:0:user" data-chatgpt-search-message-ids="user-2">
+        <div data-user-message-bubble="true"><div>Second question</div></div>
+      </div>
+      <div data-chatgpt-search-unit-key="fallback-turn-1:2:assistant" data-chatgpt-search-message-ids="assistant-2 assistant-2">
+        <h4 class="sr-only" data-conversation-role="assistant" tabindex="-1">ChatGPT said:</h4>
+        <div data-chatgpt-selection-message-id="assistant-2">
+          <div data-markdown-text-style="assistant-message">
+            <div data-markdown-copy="contents" data-dil-source-message-id="assistant-2">
+              <div><p>Second response body.</p>
+                <span class="katex" data-math="x_1 + \frac{a}{b}"></span>
+                <pre><code class="language-js">const answer = 42;
+</code></pre>
+                <table><tr><th>Value</th></tr><tr><td>First<br>Second</td></tr></table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div hidden data-turn-key="hidden-turn">
+      <div data-user-message-bubble="true">Hidden question</div>
+      <div data-markdown-text-style="assistant-message"><p>Hidden answer</p></div>
+    </div>
+    <footer data-markdown-copy="exclude">Disclaimer</footer>
+    <div data-chatgpt-composer="true"><textarea>Unsent draft</textarea></div>
+  </main>
+</body>
+</html>

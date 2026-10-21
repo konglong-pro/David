@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "David",
-  "description": "Copy selected web content or AI conversations as clean Markdown.",
-  "version": "0.3.0",
+  "description": "Archive web content and AI conversations with photos, diagrams and an offline layout for Babel.",
+  "version": "0.6.0",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -17,6 +17,24 @@
   "background": {
     "service_worker": "background.js"
   },
+  "commands": {
+    "quick-copy": {
+      "suggested_key": { "default": "Alt+Shift+Q", "mac": "MacCtrl+Shift+Q" },
+      "description": "Quick Copy selected text or the loaded AI conversation"
+    },
+    "select-messages": {
+      "suggested_key": { "default": "Alt+Shift+S", "mac": "MacCtrl+Shift+S" },
+      "description": "Select a message range in the current AI conversation"
+    },
+    "save-markdown": {
+      "suggested_key": { "default": "Alt+Shift+D", "mac": "MacCtrl+Shift+D" },
+      "description": "Save selected content as a Markdown file"
+    },
+    "export-babel": {
+      "suggested_key": { "default": "Alt+Shift+E", "mac": "MacCtrl+Shift+E" },
+      "description": "Export selected content as a rich Babel archive"
+    }
+  },
   "action": {
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -25,6 +43,6 @@
       "128": "icons/icon-128.png"
     },
     "default_popup": "popup.html",
-    "default_title": "David — Copy conversations as Markdown"
+    "default_title": "David — Export, copy or save selected content"
   }
 }

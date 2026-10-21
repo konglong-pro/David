@@ -8,7 +8,7 @@
 }
 
 body {
-  width: 320px;
+  width: 360px;
   margin: 0;
   background: #f8fafc;
   color: #0f172a;
@@ -123,4 +123,22 @@ kbd {
   color: #64748b;
   font-size: 11px;
   line-height: 1.35;
+}
+
+.shortcut-line {
+  display: block;
+  margin-top: 7px;
+  color: #475569;
+  font-size: 11px;
+}
+
+.shortcut-line kbd {
+  padding: 2px 4px;
+  font-size: 10px;
+}
+
+.configure-shortcuts {
+  padding: 8px 10px;
+  text-align: center;
+  font-size: 12px;
 }

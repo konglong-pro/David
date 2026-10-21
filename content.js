@@ -11,8 +11,13 @@
   const SELECTOR_STYLE_ID = "david-message-selector-style";
   const COMMAND_QUICK_COPY = "quick-copy";
   const COMMAND_SELECT_MESSAGES = "select-messages";
+  const COMMAND_SAVE_MARKDOWN = "save-markdown";
+  const COMMAND_EXPORT_BABEL = "export-babel";
+  const MAX_MARKDOWN_BYTES = 10 * 1024 * 1024;
   const CHATGPT_MESSAGE_SELECTOR =
     '[data-message-author-role="user"], [data-message-author-role="assistant"]';
+  const CHATGPT_USER_BODY_SELECTOR = '[data-user-message-bubble="true"]';
+  const CHATGPT_ASSISTANT_BODY_SELECTOR = '[data-markdown-text-style="assistant-message"]';
   const IGNORED_CLASS_NAMES = new Set([
     "sr-only",
     "screen-reader-user-query-label",
@@ -52,22 +57,61 @@
     "[data-math]",
     "[data-tex]",
     "[data-latex]",
+    "[data-math-source]",
+    "[data-tex-source]",
+    "[data-latex-source]",
     "[data-math-style]",
     ".math-inline",
     ".math-block",
     ".katex",
     ".katex-display",
+    "[class*='math-inline']",
+    "[class*='math-display']",
+    "[class*='math-block']",
+    "[class*='mathml']",
+    "[class*='katex']",
+    "[class*='mathjax']",
+    "[class*='MathJax']",
+    "[class*='latex']",
     "math",
     "mjx-container"
   ].join(",");
+  const MATH_SOURCE_SELECTOR = [
+    "[data-math]",
+    "[data-tex]",
+    "[data-latex]",
+    "[data-math-source]",
+    "[data-tex-source]",
+    "[data-latex-source]",
+    "[data-original-tex]",
+    "[data-original-latex]",
+    "[data-raw-tex]",
+    "[data-raw-latex]",
+    "math[alttext]",
+    "mjx-container[alttext]"
+  ].join(",");
+  const MATH_SOURCE_ATTRIBUTES = [
+    "data-math",
+    "data-tex",
+    "data-latex",
+    "data-math-source",
+    "data-tex-source",
+    "data-latex-source",
+    "data-original-tex",
+    "data-original-latex",
+    "data-raw-tex",
+    "data-raw-latex"
+  ];
   let messageSelectionController = null;
+  let shortcutInProgress = false;
+  let archiveExportInProgress = false;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "david:command") {
       return false;
     }
 
-    void handleCommand(message.command)
+    void (message.trigger === "shortcut" ? handleShortcutCommand(message.command) : handleCommand(message.command))
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => {
         const errorMessage = getErrorMessage(error);
@@ -84,9 +128,31 @@
         return quickCopy();
       case COMMAND_SELECT_MESSAGES:
         return enterMessageSelectionMode();
+      case COMMAND_SAVE_MARKDOWN:
+        return saveCurrentMarkdown();
+      case COMMAND_EXPORT_BABEL:
+        return exportForBabel();
       default:
         throw new Error("David received an unknown command.");
     }
+  }
+
+  async function handleShortcutCommand(command) {
+    if (shortcutInProgress || archiveExportInProgress) return { action: "ignored-busy" };
+    shortcutInProgress = true;
+    try {
+      const selector = messageSelectionController;
+      if (selector) {
+        if (command === COMMAND_SELECT_MESSAGES) return { action: "selection-mode-active" };
+        if ([COMMAND_QUICK_COPY, COMMAND_SAVE_MARKDOWN, COMMAND_EXPORT_BABEL].includes(command)) {
+          const selected = selector.selectedRecords();
+          if (!selected.length) throw new Error("Select at least one message before using an export shortcut.");
+          if (command === COMMAND_EXPORT_BABEL) return exportForBabel(selected);
+          return await selector.copySelected(command === COMMAND_SAVE_MARKDOWN);
+        }
+      }
+      return await handleCommand(command);
+    } finally { shortcutInProgress = false; }
   }
 
   async function quickCopy() {
@@ -108,6 +174,96 @@
     await writeClipboard(conversation.markdown);
     showToast(`Copied ${conversation.count} messages as Markdown.`, false);
     return { action: "copied-conversation", count: conversation.count };
+  }
+
+  function saveCurrentMarkdown() {
+    messageSelectionController?.cancel();
+    const selection = extractSelectionMarkdown();
+    if (selection) {
+      saveMarkdown(selection);
+      showToast("Markdown download started. Import the .md file in Babel.", false);
+      return { action: "saved-selection" };
+    }
+    const adapter = getConversationAdapter();
+    if (!adapter) {
+      throw new Error("Select some content before saving Markdown.");
+    }
+    const conversation = extractConversation(adapter);
+    saveMarkdown(conversation.markdown);
+    showToast(`Markdown download started (${conversation.count} messages). Import the .md file in Babel.`, false);
+    return { action: "saved-conversation", count: conversation.count };
+  }
+
+  function validateMarkdownSize(text) {
+    if (new TextEncoder().encode(text).byteLength > MAX_MARKDOWN_BYTES) {
+      throw new Error("Markdown exceeds Babel's 10 MiB limit. Select a smaller message range.");
+    }
+    return text;
+  }
+
+  function exportForBabel(selectedRecords = null) {
+    if (archiveExportInProgress) return { action: "ignored-busy" };
+    const capture = globalThis.__davidArchiveV1;
+    if (!capture) throw new Error("Reload David and refresh this page before exporting a Babel archive.");
+    const options = {
+      toMarkdown: (element, role) => elementToMarkdown(element, {
+        headingOffset: role ? 2 : 0, preserveTextNewlines: role === "user", archiveAssets: true
+      })
+    };
+    if (selectedRecords) {
+      options.records = selectedRecords.map((record) => ({ root: record.root, role: record.role }));
+    } else {
+      const control = extractControlSelection();
+      const selection = window.getSelection();
+      if (control) {
+        options.text = control;
+      } else if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+        options.ranges = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange());
+        const roots = new Set(options.ranges.map((range) => {
+          const element = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+          return element.closest("svg,canvas,math,mjx-container,.katex,.katex-display,.math-inline,.math-block,[data-math],[data-tex],[data-latex]") || element;
+        }));
+        options.records = [...roots].map((root) => ({ root }));
+      } else {
+        const adapter = getConversationAdapter();
+        if (!adapter) throw new Error("Select some displayed content before exporting a Babel archive.");
+        options.records = getConversationRecords(adapter).map((record) => ({ root: record.root, role: record.role }));
+        if (!options.records.length) throw new Error(`No ${adapter.name} conversation was found on this page.`);
+      }
+    }
+    messageSelectionController?.cancel();
+    archiveExportInProgress = true;
+    void capture.captureAndSave(options)
+      .then((result) => showToast(`Babel archive download started (${result.assets} images${result.warnings ? `, ${result.warnings} capture warnings` : ""}). Import the .babel.json file in Babel.`, false))
+      .catch((error) => { console.error("David archive:", error); showToast(getErrorMessage(error), true); })
+      .finally(() => { archiveExportInProgress = false; });
+    return { action: "archive-started" };
+  }
+
+  function markdownFilename(title = document.title) {
+    const base = (title || "conversation")
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+      .replace(/^[ .]+|[ .]+$/g, "")
+      .slice(0, 100)
+      .replace(/[ .]+$/g, "") || "conversation";
+    return `${base.replace(/\.md$/i, "")}.md`;
+  }
+
+  function saveMarkdown(text) {
+    validateMarkdownSize(text);
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = markdownFilename();
+    anchor.hidden = true;
+    (document.body || document.documentElement).appendChild(anchor);
+    try {
+      anchor.click();
+    } finally {
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    }
   }
 
   function getErrorMessage(error) {
@@ -304,6 +460,8 @@
     let refreshTimer = null;
     let countLabel = null;
     let copyButton = null;
+    let saveButton = null;
+    let archiveButton = null;
     let resetButton = null;
 
     function start() {
@@ -392,6 +550,8 @@
           <p class="hint">Click a message to set the start. Click another message to set the end.</p>
           <div class="actions">
             <button class="primary" id="copy" type="button" disabled>Copy</button>
+            <button id="save" type="button" disabled>Save Markdown</button>
+            <button id="archive" type="button" disabled>Export for Babel</button>
             <button id="all" type="button">Select all</button>
             <button id="reset" type="button" disabled>Start over</button>
             <button class="cancel" id="cancel" type="button">Cancel</button>
@@ -402,8 +562,16 @@
 
       countLabel = shadow.getElementById("count");
       copyButton = shadow.getElementById("copy");
+      saveButton = shadow.getElementById("save");
+      archiveButton = shadow.getElementById("archive");
       resetButton = shadow.getElementById("reset");
       copyButton.addEventListener("click", () => void copySelected());
+      saveButton.addEventListener("click", () => void copySelected(true));
+      archiveButton.addEventListener("click", () => {
+        refreshRecords();
+        const selected = getSelectedRecords();
+        if (selected.length) exportForBabel(selected);
+      });
       shadow.getElementById("all").addEventListener("click", selectAll);
       resetButton.addEventListener("click", resetSelection);
       shadow.getElementById("cancel").addEventListener("click", () => {
@@ -444,6 +612,8 @@
     }
 
     function handleKeydown(event) {
+      if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 ||
+        event.composedPath().some(isEditableTarget)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         cancel();
@@ -452,7 +622,6 @@
       }
       if (
         event.composedPath().includes(host) ||
-        isEditableTarget(event.target) ||
         event.altKey ||
         event.ctrlKey ||
         event.metaKey
@@ -468,7 +637,7 @@
     function isEditableTarget(target) {
       return Boolean(
         target instanceof Element &&
-          (target.matches("input, textarea, select") || target.isContentEditable)
+          (target.matches('input, textarea, select, [role="textbox"], [role="combobox"]') || target.isContentEditable)
       );
     }
 
@@ -487,26 +656,34 @@
       updateSelectionDisplay();
     }
 
-    async function copySelected() {
+    async function copySelected(save = false) {
       refreshRecords();
       const selectedRecords = getSelectedRecords();
       if (selectedRecords.length === 0) {
-        showToast("Select at least one message before copying.", true);
+        showToast("Select at least one message before exporting.", true);
         return;
       }
 
       try {
         const conversation = extractConversation(adapter, selectedRecords);
-        await writeClipboard(conversation.markdown);
+        if (save) {
+          saveMarkdown(conversation.markdown);
+        } else {
+          await writeClipboard(conversation.markdown);
+        }
         cancel();
         const messageLabel = conversation.count === 1 ? "message" : "messages";
         showToast(
-          `Copied ${conversation.count} selected ${messageLabel} as Markdown.`,
+          save
+            ? `Markdown download started (${conversation.count} selected ${messageLabel}). Import the .md file in Babel.`
+            : `Copied ${conversation.count} selected ${messageLabel} as Markdown.`,
           false
         );
+        return { action: save ? "saved-message-range" : "copied-message-range", count: conversation.count };
       } catch (error) {
         console.error("David:", error);
         showToast(getErrorMessage(error), true);
+        return { ok: false, error: getErrorMessage(error) };
       }
     }
 
@@ -561,6 +738,12 @@
       }
       if (copyButton) {
         copyButton.disabled = selectedRecords.length === 0;
+      }
+      if (saveButton) {
+        saveButton.disabled = selectedRecords.length === 0;
+      }
+      if (archiveButton) {
+        archiveButton.disabled = selectedRecords.length === 0;
       }
       if (resetButton) {
         resetButton.disabled = anchorKey === null;
@@ -625,26 +808,33 @@
       }
     }
 
-    const controller = { start, cancel };
+    const controller = { start, cancel, copySelected,
+      selectedRecords() { refreshRecords(); return getSelectedRecords(); } };
     return controller;
   }
 
   function getChatGPTMessages() {
-    return Array.from(document.querySelectorAll(CHATGPT_MESSAGE_SELECTOR)).map(
-      (root) => {
-        const role = root.getAttribute("data-message-author-role");
+    const messageSelector = [
+      CHATGPT_MESSAGE_SELECTOR,
+      CHATGPT_USER_BODY_SELECTOR,
+      CHATGPT_ASSISTANT_BODY_SELECTOR
+    ].join(",");
+    return Array.from(document.querySelectorAll(messageSelector))
+      .filter((root) => !root.parentElement?.closest(messageSelector))
+      .map((root) => {
+        const role = root.getAttribute("data-message-author-role") ||
+          (root.matches(CHATGPT_USER_BODY_SELECTOR) ? "user" : "assistant");
         const selectors =
           role === "assistant"
-            ? [".markdown", ".prose", "[data-message-content]"]
-            : ['[class*="whitespace-pre-wrap"]', "[data-message-content]"];
+            ? [CHATGPT_ASSISTANT_BODY_SELECTOR, ".markdown", ".prose", "[data-message-content]"]
+            : [CHATGPT_USER_BODY_SELECTOR, '[class*="whitespace-pre-wrap"]', "[data-message-content]"];
         return {
           root,
           role,
-          key: getChatGPTMessageKey(root),
+          key: getChatGPTMessageKey(root, role),
           content: findContentRoot(root, selectors, "[data-message-author-role]")
         };
-      }
-    );
+      });
   }
 
   function getGeminiMessages() {
@@ -727,15 +917,27 @@
       : 1;
   }
 
-  function getChatGPTMessageKey(element) {
-    const messageId = element.getAttribute("data-message-id");
+  function getChatGPTMessageKey(element, role) {
+    const messageId = element.getAttribute("data-message-id") ||
+      element.closest("[data-chatgpt-selection-message-id]")?.getAttribute("data-chatgpt-selection-message-id") ||
+      element.querySelector("[data-dil-source-message-id]")?.getAttribute("data-dil-source-message-id");
     if (messageId) {
       return `message:${messageId}`;
     }
 
-    const turn = element.closest('[data-testid^="conversation-turn-"]');
-    if (turn?.getAttribute("data-testid")) {
-      return `turn:${turn.getAttribute("data-testid")}`;
+    const unit = element.closest("[data-chatgpt-search-unit-key]");
+    const messageIds = new Set((unit?.getAttribute("data-chatgpt-search-message-ids") || "").split(/\s+/).filter(Boolean));
+    if (messageIds.size === 1) {
+      return `message:${Array.from(messageIds)[0]}`;
+    }
+    if (unit?.getAttribute("data-chatgpt-search-unit-key")) {
+      return `unit:${unit.getAttribute("data-chatgpt-search-unit-key")}`;
+    }
+
+    const turn = element.closest('[data-testid^="conversation-turn-"], [data-turn-key]');
+    const turnId = turn?.getAttribute("data-testid") || turn?.getAttribute("data-turn-key");
+    if (turnId) {
+      return `turn:${role}:${turnId}`;
     }
 
     return element;
@@ -780,47 +982,14 @@
   }
 
   function extractUserText(element) {
-    return normalizeNewlines(renderPlainTextChildren(element))
-      .replace(/\u00a0/g, " ")
-      .split("\n")
-      .map((line) => line.replace(/[ \t]+$/g, ""))
-      .join("\n")
-      .trim();
-  }
-
-  function renderPlainTextChildren(element) {
-    return Array.from(element.childNodes, (node) => renderPlainTextNode(node)).join("");
-  }
-
-  function renderPlainTextNode(node) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      return node.nodeValue || "";
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) {
-      return "";
-    }
-
-    const element = node;
-    const math = renderMath(element);
-    if (math !== null) {
-      return math;
-    }
-    if (shouldSkipElement(element)) {
-      return "";
-    }
-    if (element.tagName === "BR") {
-      return "\n";
-    }
-
-    const content = renderPlainTextChildren(element);
-    return BLOCK_TAGS.has(element.tagName) || element.tagName === "LI"
-      ? `${content}\n`
-      : content;
+    return elementToMarkdown(element, { headingOffset: 2, preserveTextNewlines: true });
   }
 
   function elementToMarkdown(element, options = {}) {
     const context = {
-      headingOffset: Number(options.headingOffset) || 0
+      headingOffset: Number(options.headingOffset) || 0,
+      preserveTextNewlines: options.preserveTextNewlines === true,
+      archiveAssets: options.archiveAssets === true
     };
     const rendered = renderChildren(element, context);
     return cleanMarkdown(rendered);
@@ -832,7 +1001,13 @@
 
   function renderNode(node, context) {
     if (node.nodeType === Node.TEXT_NODE) {
-      return escapeText(node.nodeValue || "");
+      const text = node.nodeValue || "";
+      return context.preserveTextNewlines
+        ? normalizeNewlines(text).split("\n")
+          .map((line) => escapeText(line, false))
+          .map((line, index, lines) => line.trim() && lines[index + 1]?.trim() ? `${line}\\` : line)
+          .join("\n")
+        : escapeText(text);
     }
 
     if (node.nodeType !== Node.ELEMENT_NODE) {
@@ -842,7 +1017,7 @@
     const element = node;
     const tag = element.tagName;
 
-    const math = renderMath(element);
+    const math = renderMath(element, context);
     if (math !== null) {
       return math;
     }
@@ -853,7 +1028,7 @@
 
     switch (tag) {
       case "BR":
-        return "\n";
+        return context.inTable ? "\n" : "\\\n";
       case "P":
         return `\n\n${renderChildren(element, context).trim()}\n\n`;
       case "H1":
@@ -878,7 +1053,7 @@
       case "PRE":
         return renderCodeBlock(element);
       case "CODE":
-        return renderInlineCode(element.textContent || "");
+        return renderInlineCode(element.textContent || "", context);
       case "UL":
       case "OL":
         return `\n\n${renderList(element, 0, context)}\n\n`;
@@ -891,7 +1066,7 @@
       case "HR":
         return "\n\n---\n\n";
       case "IMG":
-        return renderImage(element);
+        return renderImage(element, context);
       case "DIV":
       case "SECTION":
       case "ARTICLE":
@@ -905,7 +1080,8 @@
     return (
       SKIPPED_TAGS.has(element.tagName.toUpperCase()) ||
       Array.from(element.classList).some((name) => IGNORED_CLASS_NAMES.has(name)) ||
-      element.getAttribute("aria-hidden") === "true"
+      element.getAttribute("aria-hidden") === "true" ||
+      element.getAttribute("data-markdown-copy") === "exclude"
     );
   }
 
@@ -925,19 +1101,21 @@
     const rawHref = element.getAttribute("href");
     const label = renderChildren(element, context).trim();
 
-    if (!rawHref || rawHref.startsWith("javascript:")) {
-      return label;
-    }
+    const href = safeUrl(rawHref, ["http:", "https:", "mailto:", "tel:"]);
+    return href ? `[${label || escapeText(href)}](<${href}>)` : label;
+  }
 
-    let href;
+  function safeUrl(rawUrl, protocols) {
+    if (!rawUrl) return null;
     try {
-      href = new URL(rawHref, window.location.href).href;
+      const url = new URL(rawUrl, window.location.href);
+      if (!protocols.includes(url.protocol)) return null;
+      return url.href.replace(/[<>\\|\s]/g, (character) =>
+        encodeURIComponent(character)
+      );
     } catch {
-      href = rawHref;
+      return null;
     }
-
-    const safeHref = href.replace(/\)/g, "\\)");
-    return `[${label || escapeText(href)}](${safeHref})`;
   }
 
   function renderCodeBlock(element) {
@@ -1006,8 +1184,9 @@
     return "`".repeat(Math.max(3, longest + 1));
   }
 
-  function renderInlineCode(rawText) {
-    const text = normalizeNewlines(rawText).replace(/\n+/g, " ");
+  function renderInlineCode(rawText, context = {}) {
+    const normalized = normalizeNewlines(rawText).replace(/\n+/g, " ");
+    const text = context.inTable ? normalized.replace(/\|/g, "\\|") : normalized;
     if (!text) {
       return "``";
     }
@@ -1020,47 +1199,34 @@
     return `${fence}${padding}${text}${padding}${fence}`;
   }
 
-  function renderList(list, depth, context) {
+  function renderList(list, _depth, context) {
     const ordered = list.tagName === "OL";
-    const start = ordered ? Number(list.getAttribute("start")) || 1 : 1;
+    const parsedStart = Number.parseInt(list.getAttribute("start") || "1", 10);
+    const start = ordered && Number.isFinite(parsedStart) ? parsedStart : 1;
     const items = Array.from(list.children).filter((child) => child.tagName === "LI");
     const lines = [];
+    let number = start;
 
-    items.forEach((item, index) => {
-      const nestedLists = Array.from(item.children).filter(
-        (child) => child.tagName === "UL" || child.tagName === "OL"
-      );
-      const bodyNodes = Array.from(item.childNodes).filter(
-        (child) =>
-          !(
-            child.nodeType === Node.ELEMENT_NODE &&
-            (child.tagName === "UL" || child.tagName === "OL")
-          )
-      );
-      const body = cleanListItem(
-        bodyNodes.map((child) => renderNode(child, context)).join("")
-      );
-      const indent = "  ".repeat(depth);
-      const marker = ordered ? `${start + index}.` : "-";
-      const bodyLines = body.split("\n");
-
-      lines.push(`${indent}${marker} ${bodyLines[0] || ""}`.trimEnd());
-      for (const continuation of bodyLines.slice(1)) {
-        lines.push(`${indent}  ${continuation}`.trimEnd());
+    items.forEach((item) => {
+      if (ordered && item.hasAttribute("value")) {
+        const value = Number.parseInt(item.getAttribute("value"), 10);
+        if (Number.isFinite(value)) number = value;
       }
+      const body = cleanMarkdown(renderChildren(item, context));
+      const marker = ordered ? `${number++}.` : "-";
+      const indent = " ".repeat(marker.length + 1);
+      const bodyLines = body.split("\n");
+      const checkbox = Array.from(item.querySelectorAll('input[type="checkbox"]'))
+        .find((input) => input.closest("li") === item);
+      const task = checkbox ? `[${checkbox.checked ? "x" : " "}] ` : "";
 
-      for (const nested of nestedLists) {
-        lines.push(renderList(nested, depth + 1, context));
+      lines.push(`${marker} ${task}${bodyLines[0] || ""}`.trimEnd());
+      for (const continuation of bodyLines.slice(1)) {
+        lines.push(continuation ? `${indent}${continuation}` : "");
       }
     });
 
-    return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
-  }
-
-  function cleanListItem(markdown) {
-    return cleanMarkdown(markdown)
-      .replace(/^\s+|\s+$/g, "")
-      .replace(/\n{2,}/g, "\n");
+    return lines.join("\n").trimEnd();
   }
 
   function renderBlockquote(element, context) {
@@ -1078,9 +1244,8 @@
   function renderTable(table, context) {
     const rows = Array.from(table.rows).map((row) =>
       Array.from(row.cells).map((cell) => {
-        const content = cleanMarkdown(renderChildren(cell, context))
+        const content = cleanMarkdown(renderChildren(cell, { ...context, inTable: true }))
           .replace(/\n+/g, "<br>")
-          .replace(/\|/g, "\\|")
           .trim();
         return content;
       })
@@ -1105,20 +1270,17 @@
     return `\n\n${markdownRows.join("\n")}\n\n`;
   }
 
-  function renderImage(element) {
+  function renderImage(element, context = {}) {
     const alt = (element.getAttribute("alt") || "").trim();
-    const source = element.getAttribute("src") || "";
-    if (!source || source.startsWith("blob:") || source.startsWith("data:")) {
-      return alt ? `[${escapeText(alt)}]` : "";
+    const asset = element.getAttribute("data-david-archive-asset");
+    if (context.archiveAssets && /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/.test(asset || "")) {
+      return `![${escapeText(alt)}](assets/${asset})`;
     }
-
-    let url;
-    try {
-      url = new URL(source, window.location.href).href;
-    } catch {
-      url = source;
-    }
-    return `![${escapeText(alt)}](${url.replace(/\)/g, "\\)")})`;
+    const source = element.currentSrc || element.getAttribute("src") || "";
+    const url = safeUrl(source, ["http:", "https:"]);
+    return url
+      ? `![${escapeText(alt)}](<${url}>)`
+      : `&#91;Image unavailable${alt ? `: ${escapeText(alt)}` : ""}&#93;`;
   }
 
   function renderContainer(element, context) {
@@ -1129,64 +1291,244 @@
     return hasBlockChild || !content.trim() ? content : `${content}\n`;
   }
 
-  function renderMath(element) {
+  function renderMath(element, context = {}) {
     if (!element.matches(MATH_SELECTOR)) {
       return null;
     }
 
     const tex = normalizeMathSource(
-      extractMathSource(element) || extractMathFallbackText(element)
+      extractMathSource(element) || extractMathMlSource(element)
     );
     if (!tex) {
       return null;
     }
+    if (context.inTable) {
+      return `\\(${tex.replace(/\n+/g, " ")}\\)`;
+    }
 
-    return isDisplayMath(element) ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`;
+    // `\(...\)` is intentionally single-line in Babel's Markdown contract.
+    // Some ChatGPT display formulas do not carry a stable display class, but
+    // their TeX still spans lines (for example an underbrace expansion).
+    return isDisplayMath(element) || tex.includes("\n")
+      ? `\n\n\\[\n${tex}\n\\]\n\n`
+      : `\\(${tex}\\)`;
   }
 
   function extractMathSource(element) {
-    const tagName = element.tagName.toUpperCase();
-
-    for (const attribute of ["data-math", "data-tex", "data-latex"]) {
-      const value = element.getAttribute(attribute)?.trim();
-      if (value) {
-        return value;
+    const sourceElements = [
+      element,
+      ...Array.from(element.querySelectorAll(MATH_SOURCE_SELECTOR))
+    ];
+    for (const sourceElement of sourceElements) {
+      for (const attribute of MATH_SOURCE_ATTRIBUTES) {
+        const value = sourceElement.getAttribute(attribute)?.trim();
+        if (value) {
+          return value;
+        }
       }
     }
 
     const annotation = element.querySelector(
-      'annotation[encoding="application/x-tex" i], annotation[encoding="application/x-latex" i], annotation[encoding="text/tex" i]'
+      'annotation[encoding*="tex" i], annotation[encoding*="latex" i], annotation-xml[encoding*="tex" i], annotation-xml[encoding*="latex" i]'
     );
     if (annotation?.textContent?.trim()) {
       return annotation.textContent;
     }
 
-    const accessibleMath =
-      tagName === "MATH" || tagName === "MJX-CONTAINER";
-    if (accessibleMath) {
-      const accessibleSource =
-        element.getAttribute("alttext") || element.getAttribute("aria-label");
-      if (accessibleSource?.trim()) {
-        return accessibleSource;
+    const sourceScript = element.querySelector('script[type^="math/"]');
+    if (sourceScript?.textContent?.trim()) {
+      return sourceScript.textContent;
+    }
+
+    for (const sourceElement of sourceElements) {
+      const altText = sourceElement.getAttribute("alttext")?.trim();
+      if (altText) {
+        return altText;
       }
     }
 
-    const nestedAccessibleMath = element.querySelector(
-      "math[alttext], math[aria-label]"
-    );
-    return (
-      nestedAccessibleMath?.getAttribute("alttext") ||
-      nestedAccessibleMath?.getAttribute("aria-label") ||
-      ""
+    return "";
+  }
+
+  function extractMathMlSource(element) {
+    const mathElement = element.matches("math")
+      ? element
+      : element.querySelector("math");
+    return mathElement ? mathMlNodeToTex(mathElement) : "";
+  }
+
+  function mathMlNodeToTex(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.nodeValue?.replace(/\s+/g, " ").trim() || "";
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const element = node;
+    const tagName = (element.localName || element.tagName).toLowerCase();
+    const children = Array.from(element.children);
+    const childTex = (index) => mathMlNodeToTex(children[index]);
+    const joinedChildren = () => children.map(mathMlNodeToTex).join("");
+
+    switch (tagName) {
+      case "math":
+      case "mrow":
+      case "mstyle":
+      case "mpadded":
+      case "mphantom":
+      case "menclose":
+        return joinedChildren();
+      case "semantics": {
+        const presentation = children.find(
+          (child) => !["annotation", "annotation-xml"].includes(
+            (child.localName || child.tagName).toLowerCase()
+          )
+        );
+        return presentation ? mathMlNodeToTex(presentation) : "";
+      }
+      case "mi":
+        return mathMlIdentifierToTex(element.textContent || "");
+      case "mn":
+        return (element.textContent || "").trim();
+      case "mo":
+        return mathMlOperatorToTex(element.textContent || "");
+      case "mtext":
+        return `\\text{${escapeTexText(element.textContent || "")}}`;
+      case "mspace":
+      case "none":
+        return "";
+      case "msup":
+        return `${texAtom(childTex(0))}^{${childTex(1)}}`;
+      case "msub":
+        return `${texAtom(childTex(0))}_{${childTex(1)}}`;
+      case "msubsup":
+        return `${texAtom(childTex(0))}_{${childTex(1)}}^{${childTex(2)}}`;
+      case "mfrac":
+        return `\\frac{${childTex(0)}}{${childTex(1)}}`;
+      case "msqrt":
+        return `\\sqrt{${joinedChildren()}}`;
+      case "mroot":
+        return `\\sqrt[${childTex(1)}]{${childTex(0)}}`;
+      case "mfenced":
+        return mathMlFencedToTex(element, children);
+      case "mover":
+        return mathMlOverToTex(childTex(0), childTex(1));
+      case "munder":
+        return `\\underset{${childTex(1)}}{${childTex(0)}}`;
+      case "munderover":
+        return `\\overset{${childTex(2)}}{\\underset{${childTex(1)}}{${childTex(0)}}}`;
+      case "mtable":
+        return `\\begin{matrix}${children.map(mathMlTableRowToTex).join("\\\\")}\\end{matrix}`;
+      case "mtr":
+      case "mlabeledtr":
+        return mathMlTableRowToTex(element);
+      case "mtd":
+        return joinedChildren();
+      default:
+        return joinedChildren() || (element.textContent || "").trim();
+    }
+  }
+
+  function mathMlTableRowToTex(row) {
+    return Array.from(row.children)
+      .filter((cell) => (cell.localName || cell.tagName).toLowerCase() === "mtd")
+      .map(mathMlNodeToTex)
+      .join(" & ");
+  }
+
+  function mathMlFencedToTex(element, children) {
+    const opening = mathMlFenceToTex(element.getAttribute("open") ?? "(");
+    const closing = mathMlFenceToTex(element.getAttribute("close") ?? ")");
+    const separators = (element.getAttribute("separators") ?? ",")
+      .replace(/\s+/g, "")
+      .split("")
+      .filter(Boolean);
+    const values = children.map(mathMlNodeToTex);
+    const body = values.map((value, index) => {
+      if (index === 0) return value;
+      const separator = separators[Math.min(index - 1, separators.length - 1)] ?? ",";
+      return `${mathMlOperatorToTex(separator)}${value}`;
+    }).join("");
+    return `\\left${opening}${body}\\right${closing}`;
+  }
+
+  function mathMlFenceToTex(value) {
+    if (value === "{") return "\\{";
+    if (value === "}") return "\\}";
+    return value;
+  }
+
+  function mathMlOverToTex(base, over) {
+    const accents = new Map([
+      ["^", "hat"],
+      ["~", "tilde"],
+      ["¯", "bar"],
+      ["→", "vec"],
+      [".", "dot"],
+      ["¨", "ddot"]
+    ]);
+    const command = accents.get(over);
+    return command ? `\\${command}{${base}}` : `\\overset{${over}}{${base}}`;
+  }
+
+  function mathMlIdentifierToTex(value) {
+    const identifier = value.replace(/\s+/g, "").trim();
+    const symbols = new Map([
+      ["α", "\\alpha"], ["β", "\\beta"], ["γ", "\\gamma"], ["δ", "\\delta"],
+      ["ε", "\\epsilon"], ["ζ", "\\zeta"], ["η", "\\eta"], ["θ", "\\theta"],
+      ["ι", "\\iota"], ["κ", "\\kappa"], ["λ", "\\lambda"], ["μ", "\\mu"],
+      ["ν", "\\nu"], ["ξ", "\\xi"], ["π", "\\pi"], ["ρ", "\\rho"], ["σ", "\\sigma"],
+      ["τ", "\\tau"], ["υ", "\\upsilon"], ["φ", "\\phi"], ["χ", "\\chi"], ["ψ", "\\psi"],
+      ["ω", "\\omega"], ["Γ", "\\Gamma"], ["Δ", "\\Delta"], ["Θ", "\\Theta"],
+      ["Λ", "\\Lambda"], ["Ξ", "\\Xi"], ["Π", "\\Pi"], ["Σ", "\\Sigma"], ["Φ", "\\Phi"],
+      ["Ψ", "\\Psi"], ["Ω", "\\Omega"]
+    ]);
+    if (symbols.has(identifier)) {
+      return symbols.get(identifier);
+    }
+
+    const operators = new Set([
+      "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg",
+      "det", "dim", "exp", "gcd", "hom", "inf", "ker", "lg", "lim", "liminf", "limsup",
+      "ln", "log", "max", "min", "Pr", "sec", "sin", "sinh", "sup", "tan", "tanh"
+    ]);
+    if (operators.has(identifier)) {
+      return `\\${identifier} `;
+    }
+    return identifier.replace(/[\\{}_%&#$]/g, (character) =>
+      character === "\\" ? "\\backslash " : `\\${character}`
     );
   }
 
-  function extractMathFallbackText(element) {
-    const visualMath = element.querySelector(".katex-html") || element;
-    return (visualMath.textContent || "")
-      .replace(/[\u200b-\u200d\u2060]/g, "")
+  function mathMlOperatorToTex(value) {
+    const operator = value.replace(/\s+/g, "").trim();
+    const operators = new Map([
+      ["−", "-"], ["–", "-"], ["×", "\\times "], ["÷", "\\div "], ["·", "\\cdot "],
+      ["⋅", "\\cdot "], ["∗", "*"], ["≠", "\\ne "], ["≤", "\\le "], ["≥", "\\ge "],
+      ["≈", "\\approx "], ["≃", "\\simeq "], ["≡", "\\equiv "], ["±", "\\pm "], ["∓", "\\mp "],
+      ["∞", "\\infty "], ["∑", "\\sum "], ["∏", "\\prod "], ["∫", "\\int "], ["∂", "\\partial "],
+      ["∇", "\\nabla "], ["∈", "\\in "], ["∉", "\\notin "], ["⊂", "\\subset "], ["⊆", "\\subseteq "],
+      ["∪", "\\cup "], ["∩", "\\cap "], ["∧", "\\land "], ["∨", "\\lor "], ["¬", "\\neg "],
+      ["→", "\\to "], ["←", "\\leftarrow "], ["↔", "\\leftrightarrow "], ["⇒", "\\Rightarrow "],
+      ["⇔", "\\Leftrightarrow "], ["′", "'"], ["″", "''"], ["‴", "'''"], ["…", "\\ldots "]
+    ]);
+    return operators.get(operator) ?? operator.replace(/[\\{}_%&#$]/g, (character) =>
+      character === "\\" ? "\\backslash " : `\\${character}`
+    );
+  }
+
+  function texAtom(value) {
+    return value ? `{${value}}` : "{}";
+  }
+
+  function escapeTexText(value) {
+    return value
       .replace(/\s+/g, " ")
-      .trim();
+      .trim()
+      .replace(/[\\{}_%&#$]/g, (character) =>
+        character === "\\" ? "\\textbackslash{}" : `\\${character}`
+      );
   }
 
   function normalizeMathSource(source) {
@@ -1230,12 +1572,16 @@
     );
   }
 
-  function escapeText(rawText) {
-    return rawText
-      .replace(/\u00a0/g, " ")
-      .replace(/\s+/g, " ")
-      .replace(/\\/g, "\\\\")
-      .replace(/([`*_\[\]])/g, "\\$1");
+  function escapeText(rawText, collapseWhitespace = true) {
+    const normalized = rawText.replace(/\u00a0/g, " ");
+    return (collapseWhitespace ? normalized.replace(/\s+/g, " ") : normalized)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/([\\`*_{}#$~|!+.=-])/g, "\\$1")
+      // Backslash brackets are explicit LaTeX block delimiters in Babel.
+      .replace(/\[/g, "&#91;")
+      .replace(/\]/g, "&#93;");
   }
 
   function normalizeNewlines(value) {
@@ -1249,7 +1595,7 @@
     let fence = null;
 
     for (const originalLine of lines) {
-      const fenceMatch = originalLine.match(/^\s*(`{3,}|~{3,})/);
+      const fenceMatch = originalLine.match(/^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}[.)])[ \t]+))*(`{3,}|~{3,})/);
       if (fenceMatch) {
         const marker = fenceMatch[1];
         if (!fence) {
@@ -1294,6 +1640,7 @@
   }
 
   async function writeClipboard(text) {
+    validateMarkdownSize(text);
     try {
       await navigator.clipboard.writeText(text);
       return;
