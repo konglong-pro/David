@@ -235,20 +235,35 @@
       const initial = element.getBoundingClientRect();
       const width = Math.ceil(initial.width), height = Math.ceil(initial.height);
       if (!(width > 0 && height > 0) || width * height > 32_000_000) throw failure("The displayed visual is too large to capture.");
-      for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
-        const css = getComputedStyle(ancestor), rect = ancestor.getBoundingClientRect();
-        if ((/(hidden|clip|auto|scroll)/.test(css.overflowX) && width > rect.width + 2) || (/(hidden|clip|auto|scroll)/.test(css.overflowY) && height > rect.height + 2)) {
-          throw failure("A visual is clipped by its scrolling container and cannot be fully captured.");
+      const clipping = scrolls.map(([node]) => {
+        const css = getComputedStyle(node);
+        return { node, x: /^(hidden|clip|auto|scroll|overlay)$/.test(css.overflowX), y: /^(hidden|clip|auto|scroll|overlay)$/.test(css.overflowY),
+          scrollX: /^(auto|scroll|overlay)$/.test(css.overflowX), scrollY: /^(auto|scroll|overlay)$/.test(css.overflowY) };
+      }).filter(({ node, x, y }) => node !== document.scrollingElement && (x || y));
+      function visibleBounds() {
+        const bounds = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+        for (const { node, x, y } of clipping) {
+          const rect = node.getBoundingClientRect();
+          const left = rect.left + node.clientLeft, top = rect.top + node.clientTop;
+          if (x) { bounds.left = Math.max(bounds.left, left); bounds.right = Math.min(bounds.right, left + node.clientWidth); }
+          if (y) { bounds.top = Math.max(bounds.top, top); bounds.bottom = Math.min(bounds.bottom, top + node.clientHeight); }
         }
+        return bounds;
       }
-      const pageLeft = initial.left + window.scrollX, pageTop = initial.top + window.scrollY;
       const canvas = document.createElement("canvas");
       let scale = null;
-      const stepX = Math.max(1, window.innerWidth - 2), stepY = Math.max(1, window.innerHeight - 2);
+      const stepX = Math.max(1, Math.min(window.innerWidth, ...clipping.filter((item) => item.x).map(({ node }) => node.clientWidth)) - 2);
+      const stepY = Math.max(1, Math.min(window.innerHeight, ...clipping.filter((item) => item.y).map(({ node }) => node.clientHeight)) - 2);
       for (let y = 0; y < height; y += stepY) {
         for (let x = 0; x < width; x += stepX) {
           abortIfNeeded(signal);
-          window.scrollTo({ left: pageLeft + x, top: pageTop + y, behavior: "instant" });
+          for (const { node, scrollX, scrollY } of clipping) {
+            const rect = element.getBoundingClientRect(), port = node.getBoundingClientRect();
+            node.scrollBy({ left: scrollX ? rect.left + x - port.left - node.clientLeft : 0,
+              top: scrollY ? rect.top + y - port.top - node.clientTop : 0, behavior: "instant" });
+          }
+          const target = element.getBoundingClientRect();
+          window.scrollBy({ left: target.left + x, top: target.top + y, behavior: "instant" });
           await wait(60, signal);
           let response;
           panel.host.style.visibility = "hidden";
@@ -264,10 +279,11 @@
           }
           if (Math.abs(scale - currentScale) > 0.01) throw new Error("Browser zoom changed during capture. Try the export again.");
           const rect = element.getBoundingClientRect();
-          const left = Math.max(0, rect.left), top = Math.max(0, rect.top);
-          const right = Math.min(window.innerWidth, rect.right), bottom = Math.min(window.innerHeight, rect.bottom);
+          const bounds = visibleBounds();
+          const left = Math.max(bounds.left, rect.left), top = Math.max(bounds.top, rect.top);
+          const right = Math.min(bounds.right, rect.right), bottom = Math.min(bounds.bottom, rect.bottom);
           const targetRight = Math.min(width, x + stepX), targetBottom = Math.min(height, y + stepY);
-          if (left - rect.left > x + 2 || top - rect.top > y + 2 || right - rect.left < targetRight - 2 || bottom - rect.top < targetBottom - 2) throw failure("The complete displayed visual could not be revealed for capture.");
+          if (right <= left || bottom <= top || left - rect.left > x + 2 || top - rect.top > y + 2 || right - rect.left < targetRight - 2 || bottom - rect.top < targetBottom - 2) throw failure("A visual is clipped by its scrolling container and cannot be fully captured.");
           canvas.getContext("2d").drawImage(raster, left * scale, top * scale, (right - left) * scale, (bottom - top) * scale,
             (left - rect.left) * scale, (top - rect.top) * scale, (right - left) * scale, (bottom - top) * scale);
         }
@@ -277,7 +293,7 @@
       return fromDataUrl(canvas.toDataURL("image/png"));
     } finally {
       for (const [node, value, priority] of hidden) value ? node.style.setProperty("visibility", value, priority) : node.style.removeProperty("visibility");
-      for (const [node, left, top] of scrolls) { node.scrollLeft = left; node.scrollTop = top; }
+      for (const [node, left, top] of scrolls) node.scrollTo({ left, top, behavior: "instant" });
       window.scrollTo({ left: originalScroll[0], top: originalScroll[1], behavior: "instant" });
       panel.host.style.visibility = "";
     }
@@ -319,12 +335,15 @@
     const type = imageType(bytes);
     if (!type) throw new Error("A captured image did not contain a supported raster format.");
     if (bytes.byteLength > LIMITS.asset) throw failure("An image exceeds 10 MiB.");
+    const encoded = toBase64(bytes);
+    if (state.assetByData.has(encoded)) return state.assetByData.get(encoded);
     if (state.assets.length >= LIMITS.assets) throw failure("The archive exceeds 50 image assets.");
     if (state.totalBytes + bytes.byteLength > LIMITS.total) throw failure("Decoded images exceed 100 MiB.");
     state.totalBytes += bytes.byteLength;
     const number = String(state.assets.length + 1).padStart(4, "0");
-    const asset = { id: `asset-${number}`, name: `image-${number}.${type[1]}`, mimeType: type[0], dataBase64: toBase64(bytes) };
+    const asset = { id: `asset-${number}`, name: `image-${number}.${type[1]}`, mimeType: type[0], dataBase64: encoded };
     state.assets.push(asset);
+    state.assetByData.set(encoded, asset);
     state.panel.update(`Captured ${state.assets.length} image${state.assets.length === 1 ? "" : "s"}; preserving text and layout…`);
     await wait(60, state.signal);
     return asset;
@@ -348,11 +367,28 @@
       if (!bytes) { try { bytes = canvasBytes(element); } catch { /* cross-origin rendered image */ } }
       if (!bytes) {
         if (!element.naturalWidth) state.warnings.add("A source image was not decoded when captured; its currently displayed placeholder is preserved. Load or expand it before exporting for the full image.");
-        bytes = await screenshotBytes(element, state);
+        // Photo cards deliberately crop their preview. Preserve that displayed frame
+        // when CORS prevents reading the original, rather than aborting the archive.
+        let target = element;
+        const frame = element.closest('[data-d-component="image"][data-d-frame]') || element.parentElement;
+        if (frame) {
+          const css = getComputedStyle(frame), box = frame.getBoundingClientRect(), image = element.getBoundingClientRect();
+          if ((/^(hidden|clip)$/.test(css.overflowX) || /^(hidden|clip)$/.test(css.overflowY)) &&
+            box.width > 0 && box.height > 0 && box.left >= image.left - 1 && box.top >= image.top - 1 &&
+            box.right <= image.right + 1 && box.bottom <= image.bottom + 1 &&
+            (box.width < image.width - 2 || box.height < image.height - 2)) target = frame;
+        }
+        bytes = await screenshotBytes(target, state);
+        if (target !== element) {
+          const box = target.getBoundingClientRect();
+          state.screenshotDimensions.set(element, { width: box.width, height: box.height });
+          state.screenshotElements.add(element);
+          state.warnings.add("Some original images were not readable across origins. Their displayed cropped previews were preserved; the unavailable portions of the originals are not included.");
+        }
       }
       const asset = await addAsset(bytes, state);
       state.assetByElement.set(element, asset);
-      if (url) state.assetByUrl.set(url.href, asset);
+      if (url && !state.screenshotElements.has(element)) state.assetByUrl.set(url.href, asset);
       return asset;
     }
     try {
@@ -402,7 +438,8 @@
       return text ? { tree: text, clone: document.createTextNode(text) } : null;
     }
     if (node.nodeType !== Node.ELEMENT_NODE || !visible(node)) return null;
-    const tag = node.localName.toLowerCase();
+    const tag = node.localName.toLowerCase() === "button" && node.matches('[data-testid="generated-image-preview"]')
+      ? "div" : node.localName.toLowerCase();
     if (node.id?.startsWith("david-") || node.closest('#david-message-selector,#david-archive-progress,[data-markdown-copy="exclude"]')) return null;
     if (tag === "input" && node.type === "checkbox") {
       const clone = document.createElement("input");
@@ -412,6 +449,17 @@
     if (OMIT.has(tag)) {
       if (["form", "audio", "input", "textarea", "select"].includes(tag)) state.warnings.add("Form controls and audio players were omitted. Only displayed static content is archived.");
       return null;
+    }
+    if (node.matches('[data-learning-block="true"]')) {
+      requireWholeVisual(node, ranges);
+      const asset = await visualAsset(node, "layout", state);
+      const rect = node.getBoundingClientRect();
+      const alt = (node.querySelector('[role="img"]')?.getAttribute("aria-label") || "Interactive illustration").slice(0, 10_000);
+      const clone = document.createElement("img");
+      clone.setAttribute("data-david-archive-asset", asset.name); clone.alt = alt;
+      state.warnings.add("Interactive learning blocks were preserved as complete static pictures, including their current control settings.");
+      return { tree: { tag: "img", attrs: { src: `babel-asset://${asset.id}`, alt },
+        style: { display: "block", width: `${rect.width}px`, height: `${rect.height}px`, "max-width": "100%" } }, clone };
     }
     const math = node.matches(MATH);
     const visual = ["img", "svg", "canvas", "video", "iframe", "object", "embed"].includes(tag);
@@ -424,7 +472,8 @@
       const tree = { tag: "img", attrs: { src: `babel-asset://${asset.id}`, alt }, style: stylesFor(node) };
       const rect = node.getBoundingClientRect();
       if (state.screenshotElements.has(node)) {
-        tree.style.width = `${rect.width}px`; tree.style.height = `${rect.height}px`;
+        const size = state.screenshotDimensions.get(node) || rect;
+        tree.style.width = `${size.width}px`; tree.style.height = `${size.height}px`;
         delete tree.style.transform; delete tree.style["transform-origin"];
       }
       let clone = math ? node.cloneNode(true) : document.createElement("img");
@@ -490,8 +539,8 @@
     const controller = options.controller || new AbortController();
     const panel = progressPanel(controller);
     const webFonts = new Set([...(document.fonts || [])].filter((font) => font.status === "loaded").map((font) => font.family.replace(/^['"]|['"]$/g, "").toLowerCase()));
-    const state = { signal: controller.signal, panel, warnings: new Set(), assets: [], assetByElement: new Map(), assetByUrl: new Map(), totalBytes: 0, nodes: 0, webFonts, webFontRecords: new Set(), recordRoot: null,
-      screenshotElements: new Set(), toMarkdown: options.toMarkdown };
+    const state = { signal: controller.signal, panel, warnings: new Set(), assets: [], assetByElement: new Map(), assetByUrl: new Map(), assetByData: new Map(), totalBytes: 0, nodes: 0, webFonts, webFontRecords: new Set(), recordRoot: null,
+      screenshotElements: new Set(), screenshotDimensions: new Map(), toMarkdown: options.toMarkdown };
     try {
       const root = { tag: "article", style: { "box-sizing": "border-box", "padding-top": "16px", "padding-right": "16px", "padding-bottom": "16px", "padding-left": "16px" }, children: [] };
       const markdown = [];
@@ -521,7 +570,14 @@
         }
       }
       if (!root.children.length || !markdown.join("").trim()) throw new Error("No displayed content could be archived in this selection.");
-      const background = backgroundFor(options.records?.[0]?.root || document.body);
+      // Message bubbles carry their own background in the tree. Use their
+      // shared surrounding surface for the archive, rather than tinting the
+      // entire conversation with the first user's bubble color.
+      let surface = options.records?.[0]?.root?.parentElement || document.body;
+      for (const record of options.records || []) {
+        while (surface.parentElement && !surface.contains(record.root)) surface = surface.parentElement;
+      }
+      const background = backgroundFor(surface);
       const sourceStyle = getComputedStyle(options.records?.[0]?.root || document.body);
       for (const [key, value] of [["color", sourceStyle.color], ["font-family", sourceStyle.fontFamily], ["line-height", sourceStyle.lineHeight]]) {
         if (safeStyle(value)) root.style[key] = value;

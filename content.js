@@ -18,6 +18,7 @@
     '[data-message-author-role="user"], [data-message-author-role="assistant"]';
   const CHATGPT_USER_BODY_SELECTOR = '[data-user-message-bubble="true"]';
   const CHATGPT_ASSISTANT_BODY_SELECTOR = '[data-markdown-text-style="assistant-message"]';
+  const CHATGPT_GENERATED_IMAGE_SELECTOR = '[data-testid="generated-image-gallery"]';
   const IGNORED_CLASS_NAMES = new Set([
     "sr-only",
     "screen-reader-user-query-label",
@@ -817,7 +818,8 @@
     const messageSelector = [
       CHATGPT_MESSAGE_SELECTOR,
       CHATGPT_USER_BODY_SELECTOR,
-      CHATGPT_ASSISTANT_BODY_SELECTOR
+      CHATGPT_ASSISTANT_BODY_SELECTOR,
+      CHATGPT_GENERATED_IMAGE_SELECTOR
     ].join(",");
     return Array.from(document.querySelectorAll(messageSelector))
       .filter((root) => !root.parentElement?.closest(messageSelector))
@@ -925,6 +927,10 @@
       return `message:${messageId}`;
     }
 
+    const imageMessageIds = new Set((element.closest("[data-chatgpt-search-message-ids]")?.getAttribute("data-chatgpt-search-message-ids") || "").split(/\s+/).filter(Boolean));
+    if (element.matches(CHATGPT_GENERATED_IMAGE_SELECTOR) && imageMessageIds.size === 1) {
+      return `message:${Array.from(imageMessageIds)[0]}`;
+    }
     const unit = element.closest("[data-chatgpt-search-unit-key]");
     const messageIds = new Set((unit?.getAttribute("data-chatgpt-search-message-ids") || "").split(/\s+/).filter(Boolean));
     if (messageIds.size === 1) {
@@ -1078,7 +1084,7 @@
 
   function shouldSkipElement(element) {
     return (
-      SKIPPED_TAGS.has(element.tagName.toUpperCase()) ||
+      (SKIPPED_TAGS.has(element.tagName.toUpperCase()) && !element.matches('[data-testid="generated-image-preview"]')) ||
       Array.from(element.classList).some((name) => IGNORED_CLASS_NAMES.has(name)) ||
       element.getAttribute("aria-hidden") === "true" ||
       element.getAttribute("data-markdown-copy") === "exclude"

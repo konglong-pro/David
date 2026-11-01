@@ -5,6 +5,6 @@
   "scripts": {
     "check": "node --check background.js && node --check content.js && node --check archive.js && node --check popup.js && npm test",
     "test": "node --test tests/*.test.cjs",
-    "test:browser": "node tests/browser.cjs && node tests/archive-browser.cjs && node tests/shortcuts-browser.cjs"
+    "test:browser": "node tests/browser.cjs && node tests/archive-browser.cjs && node tests/shortcuts-browser.cjs && node tests/archive-scroll-browser.cjs && node tests/archive-cards-browser.cjs"
   }
 }

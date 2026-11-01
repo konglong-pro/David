@@ -175,7 +175,7 @@ async function main() {
     assert.match(streamingError, /still updating/u);
     const clippedError = await page.evaluate(async () => {
       const root = document.createElement("section"); root.style.cssText = "height:80px;overflow:hidden;width:250px";
-      const image = document.createElement("img"); image.src = "https://media.example.invalid/locked.png"; image.style.cssText = "width:250px;height:500px"; root.appendChild(image); document.body.appendChild(root); await image.decode();
+      const image = document.createElement("div"); image.style.cssText = "width:250px;height:500px;background-image:linear-gradient(red,blue)"; root.appendChild(image); document.body.appendChild(root);
       try { await globalThis.__davidArchiveV1.capture({ records: [{ root }], toMarkdown: (element) => globalThis.__davidTest.elementToMarkdown(element, { archiveAssets: true }) }); return null; }
       catch (error) { return error.message; } finally { root.remove(); }
     });
