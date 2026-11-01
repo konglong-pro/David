@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Synthetic fixture - ChatGPT</title></head>
+<body>
+  <article data-message-author-role="user" data-message-id="user-1">
+    <div class="whitespace-pre-wrap"><p>Literal cost $5 and $10. &lt;br&gt; &lt;script&gt;literal&lt;/script&gt; **plain** [[literal]]</p><p>Line one
+Line  two</p><img src="https://example.invalid/user(a).png?key=1&amp;v=2" alt="User photo"></div>
+  </article>
+  <article data-message-author-role="assistant" data-message-id="assistant-1">
+    <div class="markdown">
+      <h1>Format fixture</h1>
+      <p>Inline <span class="katex"><math><semantics><mi>x</mi><annotation encoding="application/x-tex">x_1 + \frac{a}{b}</annotation></semantics></math></span> and literal $5.</p>
+      <div class="katex-display"><span class="katex" data-math="\begin{aligned}a&amp;=b\\c&amp;=d\end{aligned}"></span></div>
+      <ol start="9">
+        <li><p>Ninth paragraph.</p><ul><li>Nested before code.</li></ul><p>Paragraph after nested list.</p><pre><code class="language-python">first = 1
+
+text = "```"
+</code></pre></li>
+        <li><p>Tenth paragraph.</p><pre><code class="language-js">  keepIndent();
+next();
+</code></pre><p>Still the tenth item.</p></li>
+      </ol>
+      <ul><li><input type="checkbox" checked disabled>Done task</li><li><input type="checkbox" disabled>Pending task</li></ul>
+      <blockquote><p>Quoted <strong>bold</strong> and <em>emphasis</em>.</p></blockquote>
+      <p>Hard break<br>Next line</p>
+      <table><thead><tr><th>Case</th><th>Value</th></tr></thead><tbody>
+        <tr><td>Multiline</td><td>First<br>Second</td></tr>
+        <tr><td>Literal HTML</td><td>&lt;br&gt; &amp; &lt;b&gt;literal&lt;/b&gt;</td></tr>
+        <tr><td>Pipe</td><td>left | right and <code>a|b</code></td></tr>
+        <tr><td>Math</td><td><span class="katex-display" data-math="\frac{a}{b}"></span></td></tr>
+        <tr><td>Math pipe</td><td><span class="katex" data-math="|a| + \|b\|"></span></td></tr>
+      </tbody></table>
+      <p><a href="https://example.invalid/a(b)?signed=1&amp;v=two%20words">Balanced URL</a> and <a href="JaVaScRiPt:alert(1)">Unsafe label</a>.</p>
+      <p><img src="https://example.invalid/a(b).png?key=1&amp;v=2" alt="Remote [image]"><img src="blob:https://chatgpt.com/local" alt="Local image"></p>
+      <pre><code class="language-mermaid">graph TD
+  A--&gt;B
+</code></pre>
+      <p>Fallback <math><mrow><mi>a_b</mi><mo>+</mo><mtext>50% &amp; x</mtext></mrow></math>.</p>
+    </div>
+  </article>
+</body>
+</html>

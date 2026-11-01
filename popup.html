@@ -17,6 +17,11 @@
       </header>
 
       <div class="actions" aria-label="Copy options">
+        <button id="export-babel" type="button" aria-keyshortcuts="B">
+          <span class="button-title"><span>Export for Babel</span><kbd>B</kbd></span>
+          <span class="button-description">Archive photos, diagrams and the original static layout.</span>
+          <span class="shortcut-line">Browser: <kbd data-command-shortcut="export-babel">Loading…</kbd></span>
+        </button>
         <button id="quick-copy" type="button" aria-keyshortcuts="C">
           <span class="button-title">
             <span>Quick Copy</span>
@@ -25,6 +30,7 @@
           <span class="button-description">
             Selected text first, otherwise the full conversation.
           </span>
+          <span class="shortcut-line">Browser: <kbd data-command-shortcut="quick-copy">Loading…</kbd></span>
         </button>
 
         <button id="select-messages" type="button" aria-keyshortcuts="S">
@@ -35,11 +41,25 @@
           <span class="button-description">
             Choose one message or a continuous conversation range.
           </span>
+          <span class="shortcut-line">Browser: <kbd data-command-shortcut="select-messages">Loading…</kbd></span>
+        </button>
+
+        <button id="save-markdown" type="button" aria-keyshortcuts="D">
+          <span class="button-title">
+            <span>Save Markdown</span>
+            <kbd>D</kbd>
+          </span>
+          <span class="button-description">
+            Download a .md file for Babel's Import Markdown file.
+          </span>
+          <span class="shortcut-line">Browser: <kbd data-command-shortcut="save-markdown">Loading…</kbd></span>
         </button>
       </div>
 
       <p class="status" id="status" role="status" aria-live="polite"></p>
-      <p class="keyboard-help">Press C or S. Use Tab and Enter to navigate.</p>
+      <p class="keyboard-help">Press B, C, S or D. Use Tab and Enter to navigate.</p>
+      <p class="keyboard-help" id="shortcut-status" role="status" aria-live="polite">Checking browser shortcuts…</p>
+      <button class="configure-shortcuts" id="configure-shortcuts" type="button">Configure browser shortcuts</button>
     </main>
     <script src="popup.js"></script>
   </body>

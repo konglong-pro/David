@@ -1,0 +1,68 @@
+{
+  "format": "babel.web-archive",
+  "version": 1,
+  "title": "Synthetic rich capture",
+  "markdown": "## Assistant\n\n![Synthetic pixel](assets/image-0001.png)\n\nA portable synthetic image and caption.",
+  "source": {
+    "url": "https://example.invalid/synthetic",
+    "title": "Synthetic rich capture",
+    "capturedAt": "2026-10-20T13:30:00.000Z"
+  },
+  "assets": [
+    {
+      "id": "asset-0001",
+      "name": "image-0001.png",
+      "mimeType": "image/png",
+      "dataBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jwX8AAAAASUVORK5CYII="
+    }
+  ],
+  "snapshot": {
+    "tree": {
+      "tag": "article",
+      "style": {
+        "width": "640px",
+        "color": "rgb(15, 23, 42)",
+        "background-color": "rgb(255, 255, 255)"
+      },
+      "children": [
+        {
+          "tag": "section",
+          "attrs": {
+            "data-role": "assistant"
+          },
+          "children": [
+            {
+              "tag": "h2",
+              "children": [
+                "Assistant"
+              ]
+            },
+            {
+              "tag": "figure",
+              "children": [
+                {
+                  "tag": "img",
+                  "attrs": {
+                    "src": "babel-asset://asset-0001",
+                    "alt": "Synthetic pixel",
+                    "width": "120",
+                    "height": "120"
+                  }
+                },
+                {
+                  "tag": "figcaption",
+                  "children": [
+                    "A portable synthetic image and caption."
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "width": 640,
+    "background": "#ffffff"
+  },
+  "warnings": []
+}
